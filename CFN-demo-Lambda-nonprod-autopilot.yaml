@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create demo to auto-stop/start non prod resources
+
+Resources: 
+  AutoPilotLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+                - "sts:AssumeRole"
+      Path: "/"
+
+  StopNonProdLambdaFunction:
+    DependsOn: AutoPilotLambdaRole
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Stops 
+      FunctionName: StopNonProd
+      Timeout: 60
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Runtime: python3.7
+      Role:
+        Fn::GetAtt:
+          - AutoPilotLambdaRole
+          - Arn
+      Code: 
+        ZipFile: |
+          import boto3
+          ec2 = boto3.resource('ec2')
+          def lambda_handler(event, context):
+              # create filter for instances in running state with the non-prod stage tag
+              filters = [
+                  {
+                  'Name': 'instance-state-name', 
+                  'Values': ['running']
+              },
+              {
+                  'Name': 'tag:stage',
+                  'Values': ['non-prod']
+              }
+              ]
+              # Stop running non-prod instances
+              ec2.instances.filter(Filters=filters).stop()
+              print("Finished")
+      Tags:
+        - Key: attributionText
+          Value: Created by Ben Moses - AWS.
+        - Key: attributionPurpose
+          Value: For Demo purposes only. Not for customer use.
+  
+  StartNonProdLambdaFunction:
+    DependsOn: AutoPilotLambdaRole
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Starts 
+      FunctionName: StartNonProd
+      Timeout: 60
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Runtime: python3.7
+      Role:
+        Fn::GetAtt:
+          - AutoPilotLambdaRole
+          - Arn
+      Code: 
+        ZipFile: |
+          import boto3
+          ec2 = boto3.resource('ec2')
+          def lambda_handler(event, context):
+              # create filter for instances in running state with the non-prod stage tag
+              filters = [
+              {
+                  'Name': 'tag:stage',
+                  'Values': ['non-prod']
+              }
+              ]
+              # Start  non-prod instances
+              ec2.instances.filter(Filters=filters).start()
+              print("Finished")
+      Tags:
+        - Key: attributionText
+          Value: Created by Ben Moses - AWS.
+        - Key: attributionPurpose
+          Value: For Demo purposes only. Not for customer use.
+  
+  StopEvent:
+    DependsOn: 
+    - StopNonProdLambdaFunction
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: Triggers AutoPilot Lambda shutdown
+      ScheduleExpression: cron(*/10 * * * ? *)
+      State: DISABLED
+      Targets:
+        - Arn:
+            Fn::GetAtt:
+              - StopNonProdLambdaFunction
+              - Arn
+          Id: StopNonProdLambda
+
+  StartEvent:
+    DependsOn: 
+    - StartNonProdLambdaFunction
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: Triggers AutoPilot Lambda Startup
+      ScheduleExpression: cron(*/10 * * * ? *)
+      State: ENABLED
+      Targets:
+        - Arn:
+            Fn::GetAtt:
+              - StartNonProdLambdaFunction
+              - Arn
+          Id: StartNonProdLambda
+
+  InvokeLambdaPermissionStart:
+    DependsOn: StartNonProdLambdaFunction
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::GetAtt:
+          - StartNonProdLambdaFunction
+          - Arn
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+          - StartEvent
+          - Arn
+
+  InvokeLambdaPermissionStop:
+    DependsOn: StopNonProdLambdaFunction
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::GetAtt:
+          - StopNonProdLambdaFunction
+          - Arn
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+          - StopEvent
+          - Arn
+      
